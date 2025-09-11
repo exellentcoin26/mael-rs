@@ -1,7 +1,7 @@
-use std::collections::HashSet;
+use std::{collections::HashSet, io::Write};
 
 use anyhow::Result;
-use mael::Node;
+use mael::{Node, Sender};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -30,11 +30,11 @@ impl Node for EchoNode {
 
     type Response = Response;
 
-    fn handle(&mut self, request: Self::Request) -> Self::Response {
-        match request {
+    fn handle(&mut self, request: Self::Request, _: Sender<impl Write>) -> Result<Self::Response> {
+        Ok(match request {
             Request::Init { .. } => Response::InitOk,
             Request::Echo { echo } => Response::EchoOk { echo },
-        }
+        })
     }
 }
 

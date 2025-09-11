@@ -4,10 +4,20 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
-struct Message<T> {
+pub struct Message<T> {
     src: String,
     dest: String,
     body: MessageBody<T>,
+}
+
+impl<T> Message<T> {
+    pub fn new(src: String, dest: String, body: T) -> Self {
+        Self {
+            src,
+            dest,
+            body: MessageBody { id: 1, type_: body },
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -29,7 +39,11 @@ pub trait Node: Sized {
     type Request: for<'de> serde::Deserialize<'de>;
     type Response: serde::Serialize;
 
-    fn handle(&mut self, request: Self::Request) -> Self::Response;
+    fn handle(
+        &mut self,
+        request: Self::Request,
+        sender: Sender<impl Write>,
+    ) -> Result<Self::Response>;
 
     fn run(mut self, stdin: impl Read, mut stdout: impl Write) -> Result<()> {
         for message in
@@ -37,7 +51,9 @@ pub trait Node: Sized {
         {
             let message = message.context("reading message from stdin")?;
 
-            let response = self.handle(message.body.type_);
+            let response = self
+                .handle(message.body.type_, Sender::new(&mut stdout))
+                .context("handling a request")?;
 
             let response_message = Message {
                 src: message.dest,
@@ -56,6 +72,31 @@ pub trait Node: Sized {
             stdout.write_all(b"\n").context("writing newline")?;
             stdout.flush().context("flushing")?;
         }
+        Ok(())
+    }
+}
+
+pub struct Sender<O> {
+    stdout: O,
+}
+
+impl<O> Sender<O> {
+    fn new(stdout: O) -> Self {
+        Self { stdout }
+    }
+}
+
+impl<O> Sender<O>
+where
+    O: Write,
+{
+    pub fn send<R>(&mut self, message: Message<R>) -> Result<()>
+    where
+        R: serde::Serialize,
+    {
+        serde_json::to_writer(&mut self.stdout, &message).context("writing message to stdout")?;
+        self.stdout.write_all(b"\n").context("writing newline")?;
+        self.stdout.flush().context("flushing stdout")?;
         Ok(())
     }
 }
