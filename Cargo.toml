@@ -7,3 +7,4 @@ edition = "2024"
 anyhow = "1.0.99"
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.143"
+ulid = { version = "1.2.1", features = ["serde"] }
