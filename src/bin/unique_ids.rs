@@ -1,4 +1,7 @@
-use std::{collections::HashSet, io::Write};
+use std::{
+    collections::HashSet,
+    io::{Read, Write},
+};
 
 use anyhow::Result;
 use mael::{Node, Sender};
@@ -29,7 +32,11 @@ impl Node for UniqueIdNode {
 
     type Response = Response;
 
-    fn handle(&mut self, request: Self::Request, _: Sender<impl Write>) -> Result<Self::Response> {
+    fn handle(
+        &mut self,
+        request: Self::Request,
+        _: Sender<impl Read, impl Write>,
+    ) -> Result<Self::Response> {
         Ok(match request {
             Request::Init { .. } => Response::InitOk,
             Request::Generate => Response::GenerateOk { id: Ulid::new() },

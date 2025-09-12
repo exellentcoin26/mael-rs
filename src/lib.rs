@@ -3,6 +3,10 @@ use std::io::{Read, Write};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+pub use self::seq_kv::SeqKv;
+
+pub mod seq_kv;
+
 #[derive(Debug, Serialize, Deserialize)]
 pub struct Message<T> {
     src: String,
@@ -15,7 +19,10 @@ impl<T> Message<T> {
         Self {
             src,
             dest,
-            body: MessageBody { id: 1, type_: body },
+            body: MessageBody {
+                id: Some(1),
+                type_: body,
+            },
         }
     }
 }
@@ -23,14 +30,14 @@ impl<T> Message<T> {
 #[derive(Debug, Serialize, Deserialize)]
 struct MessageBody<T> {
     #[serde(rename = "msg_id")]
-    id: u32,
+    id: Option<u32>,
     #[serde(flatten)]
     type_: T,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
 struct Response<R> {
-    in_reply_to: u32,
+    in_reply_to: Option<u32>,
     #[serde(flatten)]
     kind: R,
 }
@@ -42,17 +49,18 @@ pub trait Node: Sized {
     fn handle(
         &mut self,
         request: Self::Request,
-        sender: Sender<impl Write>,
+        sender: Sender<impl Read, impl Write>,
     ) -> Result<Self::Response>;
 
-    fn run(mut self, stdin: impl Read, mut stdout: impl Write) -> Result<()> {
-        for message in
-            serde_json::Deserializer::from_reader(stdin).into_iter::<Message<Self::Request>>()
+    fn run(mut self, mut stdin: impl Read, mut stdout: impl Write) -> Result<()> {
+        while let Some(message) = serde_json::Deserializer::from_reader(&mut stdin)
+            .into_iter::<Message<Self::Request>>()
+            .next()
         {
             let message = message.context("reading message from stdin")?;
 
             let response = self
-                .handle(message.body.type_, Sender::new(&mut stdout))
+                .handle(message.body.type_, Sender::new(&mut stdin, &mut stdout))
                 .context("handling a request")?;
 
             let response_message = Message {
@@ -76,17 +84,18 @@ pub trait Node: Sized {
     }
 }
 
-pub struct Sender<O> {
+pub struct Sender<I, O> {
+    stdin: I,
     stdout: O,
 }
 
-impl<O> Sender<O> {
-    fn new(stdout: O) -> Self {
-        Self { stdout }
+impl<I, O> Sender<I, O> {
+    fn new(stdin: I, stdout: O) -> Self {
+        Self { stdin, stdout }
     }
 }
 
-impl<O> Sender<O>
+impl<I, O> Sender<I, O>
 where
     O: Write,
 {
@@ -98,5 +107,39 @@ where
         self.stdout.write_all(b"\n").context("writing newline")?;
         self.stdout.flush().context("flushing stdout")?;
         Ok(())
+    }
+}
+
+impl<I, O> Sender<I, O>
+where
+    I: Read,
+{
+    pub fn receive<R>(&mut self) -> Result<R>
+    where
+        R: for<'de> Deserialize<'de>,
+    {
+        Ok(serde_json::Deserializer::from_reader(&mut self.stdin)
+            .into_iter::<Message<Response<R>>>()
+            .next()
+            .context("waiting for message from stdin")?
+            .context("reading message from stdin")?
+            .body
+            .type_
+            .kind)
+    }
+}
+
+impl<I, O> Sender<I, O>
+where
+    I: Read,
+    O: Write,
+{
+    pub fn send_and_receive<Req, Res>(&mut self, message: Message<Req>) -> Result<Res>
+    where
+        Req: serde::Serialize,
+        Res: for<'de> serde::Deserialize<'de>,
+    {
+        self.send(message).context("sending message")?;
+        self.receive()
     }
 }

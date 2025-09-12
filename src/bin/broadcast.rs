@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeSet, HashMap, HashSet},
-    io::Write,
+    io::{Read, Write},
 };
 
 use anyhow::{Context, Result};
@@ -48,7 +48,7 @@ impl Node for BroadcastNode {
     fn handle(
         &mut self,
         request: Self::Request,
-        mut sender: Sender<impl Write>,
+        mut sender: Sender<impl Read, impl Write>,
     ) -> Result<Self::Response> {
         Ok(match request {
             Request::Init { node_id, .. } => {
