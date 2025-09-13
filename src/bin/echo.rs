@@ -33,7 +33,7 @@ impl Node for EchoNode {
 
     type Response = Response;
 
-    fn handle(
+    fn handle_request(
         &mut self,
         request: Self::Request,
         _: RequestInfo,

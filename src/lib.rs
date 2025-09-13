@@ -39,7 +39,7 @@ struct MessageBody<T> {
 struct Response<R> {
     in_reply_to: Option<u32>,
     #[serde(flatten)]
-    kind: R,
+    inner: R,
 }
 
 #[derive(Deserialize)]
@@ -53,16 +53,31 @@ pub struct RequestInfo<'a> {
     pub src: &'a str,
 }
 
+pub struct ResponseInfo {
+    pub in_reply_to: Option<u32>,
+}
+
 pub trait Node: Sized {
     type Request: DeserializeOwned;
     type Response: serde::Serialize + DeserializeOwned;
 
-    fn handle(
+    fn handle_request(
         &mut self,
         request: Self::Request,
         info: RequestInfo,
         socket: &mut Socket<impl Read, impl Write>,
     ) -> Result<Self::Response>;
+
+    fn handle_response(
+        &mut self,
+        response: Self::Response,
+        info: ResponseInfo,
+        socket: &mut Socket<impl Read, impl Write>,
+    ) -> Result<()> {
+        // By default receiving a response of any kind, does not matter.
+        let _ = (response, info, socket);
+        Ok(())
+    }
 
     fn run(mut self, mut socket: Socket<impl Read, impl Write>) -> Result<()> {
         loop {
@@ -73,7 +88,7 @@ pub trait Node: Sized {
             match message.body.type_ {
                 RequestResponse::Request(req) => {
                     let response = self
-                        .handle(req, RequestInfo { src: &message.src }, &mut socket)
+                        .handle_request(req, RequestInfo { src: &message.src }, &mut socket)
                         .context("handling a request")?;
 
                     let response_message = Message {
@@ -83,15 +98,22 @@ pub trait Node: Sized {
                             id: message.body.id,
                             type_: Response {
                                 in_reply_to: message.body.id,
-                                kind: response,
+                                inner: response,
                             },
                         },
                     };
 
                     socket.send(response_message).context("sending response")?;
                 }
-                RequestResponse::Response(_res) => {
-                    // Ignore for now.
+                RequestResponse::Response(res) => {
+                    self.handle_response(
+                        res.inner,
+                        ResponseInfo {
+                            in_reply_to: res.in_reply_to,
+                        },
+                        &mut socket,
+                    )
+                    .context("handling a response")?;
                 }
             }
         }
@@ -151,6 +173,6 @@ where
         Res: for<'de> serde::Deserialize<'de>,
     {
         self.send(message).context("sending message")?;
-        Ok(self.receive::<Response<Res>>()?.body.type_.kind)
+        Ok(self.receive::<Response<Res>>()?.body.type_.inner)
     }
 }

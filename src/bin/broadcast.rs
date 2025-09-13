@@ -45,7 +45,7 @@ impl Node for BroadcastNode {
 
     type Response = Response;
 
-    fn handle(
+    fn handle_request(
         &mut self,
         request: Self::Request,
         info: RequestInfo,
