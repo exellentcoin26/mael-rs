@@ -20,10 +20,15 @@ impl<T> Message<T> {
             src,
             dest,
             body: MessageBody {
-                id: Some(1),
-                type_: body,
+                id: None,
+                kind: body,
             },
         }
+    }
+
+    pub fn with_id(mut self, id: u32) -> Self {
+        self.body.id = Some(id);
+        self
     }
 }
 
@@ -32,7 +37,7 @@ struct MessageBody<T> {
     #[serde(rename = "msg_id")]
     id: Option<u32>,
     #[serde(flatten)]
-    type_: T,
+    kind: T,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -85,7 +90,7 @@ pub trait Node: Sized {
                 .receive::<RequestResponse<Self::Request, Self::Response>>()
                 .context("receiving message from socket")?;
 
-            match message.body.type_ {
+            match message.body.kind {
                 RequestResponse::Request(req) => {
                     let response = self
                         .handle_request(req, RequestInfo { src: &message.src }, &mut socket)
@@ -96,7 +101,7 @@ pub trait Node: Sized {
                         dest: message.src,
                         body: MessageBody {
                             id: message.body.id,
-                            type_: Response {
+                            kind: Response {
                                 in_reply_to: message.body.id,
                                 inner: response,
                             },
@@ -173,6 +178,6 @@ where
         Res: for<'de> serde::Deserialize<'de>,
     {
         self.send(message).context("sending message")?;
-        Ok(self.receive::<Response<Res>>()?.body.type_.inner)
+        Ok(self.receive::<Response<Res>>()?.body.kind.inner)
     }
 }
