@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use anyhow::{Result, bail};
 use serde::{Deserialize, Serialize};
 
-use crate::{Message, Sender};
+use crate::{Message, Socket};
 
 #[derive(Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -92,7 +92,7 @@ impl SeqKv {
         self,
         src: String,
         key: String,
-        sender: &mut Sender<I, O>,
+        sender: &mut Socket<I, O>,
     ) -> Result<Option<String>>
     where
         I: Read,
@@ -112,7 +112,7 @@ impl SeqKv {
         src: String,
         key: String,
         value: String,
-        sender: &mut Sender<I, O>,
+        sender: &mut Socket<I, O>,
     ) -> Result<()>
     where
         I: Read,
@@ -132,7 +132,7 @@ impl SeqKv {
         key: String,
         from: String,
         to: String,
-        sender: &mut Sender<I, O>,
+        sender: &mut Socket<I, O>,
     ) -> Result<CasResponse>
     where
         I: Read,

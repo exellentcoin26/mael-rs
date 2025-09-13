@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use mael::{Message, Node, Sender};
+use mael::{Message, Node, RequestInfo, Socket};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -48,7 +48,8 @@ impl Node for BroadcastNode {
     fn handle(
         &mut self,
         request: Self::Request,
-        mut sender: Sender<impl Read, impl Write>,
+        info: RequestInfo,
+        socket: &mut Socket<impl Read, impl Write>,
     ) -> Result<Self::Response> {
         Ok(match request {
             Request::Init { node_id, .. } => {
@@ -58,7 +59,11 @@ impl Node for BroadcastNode {
             Request::Broadcast { message } => {
                 self.messages.insert(message);
                 for neighbour in self.neighbours.iter() {
-                    sender
+                    if neighbour == info.src {
+                        // Do not broadcast the message back to where it came from.
+                        continue;
+                    }
+                    socket
                         .send(Message::new(
                             self.id.clone(),
                             neighbour.clone(),
@@ -73,6 +78,8 @@ impl Node for BroadcastNode {
             },
             Request::Topology { mut topology } => {
                 self.neighbours = topology.remove(&self.id).unwrap_or_default();
+                // Ensure this node is not found in the neighbours.
+                self.neighbours.remove(&self.id);
                 Response::TopologyOk
             }
         })
@@ -82,6 +89,7 @@ impl Node for BroadcastNode {
 fn main() -> Result<()> {
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
+    let socket = Socket::new(stdin, stdout);
 
-    BroadcastNode::default().run(stdin, stdout)
+    BroadcastNode::default().run(socket)
 }

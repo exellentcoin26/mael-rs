@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::{Context, Result};
-use mael::{Node, Sender, SeqKv};
+use mael::{Node, RequestInfo, SeqKv, Socket};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -42,7 +42,8 @@ impl Node for CountingNode {
     fn handle(
         &mut self,
         request: Self::Request,
-        mut sender: Sender<impl Read, impl Write>,
+        _: RequestInfo,
+        socket: &mut Socket<impl Read, impl Write>,
     ) -> Result<Self::Response> {
         Ok(match request {
             Request::Init { node_id, .. } => {
@@ -51,7 +52,7 @@ impl Node for CountingNode {
             }
             Request::Read => {
                 let value = SeqKv
-                    .read(self.id.clone(), "counter".to_string(), &mut sender)
+                    .read(self.id.clone(), "counter".to_string(), socket)
                     .context("reading counter from key-value store")?
                     .unwrap_or_else(|| "0".to_string())
                     .parse()
@@ -63,7 +64,7 @@ impl Node for CountingNode {
                     use mael::seq_kv::CasResponse;
 
                     let value = SeqKv
-                        .read(self.id.clone(), "counter".to_string(), &mut sender)
+                        .read(self.id.clone(), "counter".to_string(), socket)
                         .context("reading counter from key-value store")?
                         .unwrap_or_else(|| "0".to_string());
                     let result = SeqKv
@@ -75,7 +76,7 @@ impl Node for CountingNode {
                                 "{}",
                                 value.parse::<u32>().context("parsing value as u32")? + delta
                             ),
-                            &mut sender,
+                            socket,
                         )
                         .context("setting a new counter in the key-value store")?;
                     match result {
@@ -96,6 +97,7 @@ impl Node for CountingNode {
 fn main() -> Result<()> {
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
+    let socket = Socket::new(stdin, stdout);
 
-    CountingNode::default().run(stdin, stdout)
+    CountingNode::default().run(socket)
 }

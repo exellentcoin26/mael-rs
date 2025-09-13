@@ -4,7 +4,7 @@ use std::{
 };
 
 use anyhow::Result;
-use mael::{Node, Sender};
+use mael::{Node, RequestInfo, Socket};
 use serde::{Deserialize, Serialize};
 
 #[derive(Default)]
@@ -69,7 +69,8 @@ impl Node for KafkaNode {
     fn handle(
         &mut self,
         request: Self::Request,
-        _: Sender<impl Read, impl Write>,
+        _: RequestInfo,
+        _: &mut Socket<impl Read, impl Write>,
     ) -> Result<Self::Response> {
         Ok(match request {
             Request::Init { .. } => Response::InitOk,
@@ -117,6 +118,7 @@ impl Node for KafkaNode {
 fn main() -> Result<()> {
     let stdin = std::io::stdin().lock();
     let stdout = std::io::stdout().lock();
+    let socket = Socket::new(stdin, stdout);
 
-    KafkaNode::default().run(stdin, stdout)
+    KafkaNode::default().run(socket)
 }
