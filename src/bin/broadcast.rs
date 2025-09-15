@@ -8,7 +8,7 @@ use anyhow::{Context, Result};
 use mael::{Message, Node, RequestInfo, Socket};
 use serde::{Deserialize, Serialize};
 
-const BROADCAST_RETRY_TIMEOUT: Duration = Duration::from_secs(4);
+const BROADCAST_RETRY_TIMEOUT: Duration = Duration::from_secs(1);
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde[tag = "type", rename_all = "snake_case"]]
@@ -48,12 +48,92 @@ impl IdGen {
 }
 
 #[derive(Default)]
+struct RetrySet {
+    messages: HashMap<u32, HashSet<u32>>,
+}
+
+impl RetrySet {
+    fn register(&mut self, original_message: u32, retry: u32) {
+        self.messages
+            .entry(original_message)
+            .or_default()
+            .insert(retry);
+    }
+
+    /// Removes the retry chain of messages and returns the original message id of the chain.
+    fn remove_chain_for_message(&mut self, message: u32) -> Option<u32> {
+        let original = self
+            .messages
+            .iter()
+            .find_map(|(o, rc)| rc.contains(&message).then_some(*o));
+        original.inspect(|o| {
+            self.messages.remove(o);
+        })
+    }
+}
+
+struct BroadcastOkWaiter {
+    message_id: u32,
+    last_sent: Instant,
+    /// Use an exponential back-off.
+    retries: u32,
+    dest: String,
+    message: u32,
+}
+
+impl BroadcastOkWaiter {
+    fn retry(&mut self, new_message_id: u32) {
+        self.message_id = new_message_id;
+        self.last_sent = Instant::now();
+        self.retries += 1;
+    }
+}
+
+#[derive(Default)]
 struct BroadcastNode {
     node_id: String,
     id_gen: IdGen,
     messages: BTreeSet<u32>,
     neighbours: HashSet<String>,
-    awaiting_broadcast_ok: HashMap<u32, (Instant, String, u32)>,
+    retry_set: RetrySet,
+    awaiting_broadcast_ok: HashMap<u32, BroadcastOkWaiter>,
+}
+
+impl BroadcastNode {
+    fn rebroadcast_on_timeout(&mut self, socket: &mut Socket<impl Read, impl Write>) -> Result<()> {
+        // TODO: Move this to a seperate thread.
+        for (
+            original_message_id,
+            entry @ &mut BroadcastOkWaiter {
+                message_id,
+                last_sent,
+                retries,
+                message,
+                ..
+            },
+        ) in self.awaiting_broadcast_ok.iter_mut()
+        {
+            if last_sent.elapsed() < BROADCAST_RETRY_TIMEOUT * 2u32.pow(retries) {
+                continue;
+            }
+
+            // Resend the request.
+            let new_message_id = self.id_gen.next_id();
+            socket
+                .send(
+                    Message::new(
+                        self.node_id.clone(),
+                        entry.dest.clone(),
+                        Request::Broadcast { message },
+                    )
+                    .with_id(message_id),
+                )
+                .context("re-broadcasting message to neighbour")?;
+            entry.retry(new_message_id);
+            self.retry_set.register(*original_message_id, message_id);
+        }
+        Ok(())
+    }
 }
 
 impl Node for BroadcastNode {
@@ -67,45 +147,7 @@ impl Node for BroadcastNode {
         info: RequestInfo,
         socket: &mut Socket<impl Read, impl Write>,
     ) -> Result<Self::Response> {
-        // TODO: Move this to a seperate thread.
-        let mut handled = HashSet::new();
-        let mut new = HashMap::new();
-        // This is a closure purely to update state even after an error occurs as this loop does
-        // not mutate.
-        let mut rebroadcast = || -> Result<()> {
-            for (acknowledge_id, (sent_at, destination, message)) in
-                self.awaiting_broadcast_ok.iter()
-            {
-                if sent_at.elapsed() < BROADCAST_RETRY_TIMEOUT {
-                    continue;
-                }
-
-                // Resend the request.
-                let message_id = self.id_gen.next_id();
-                socket
-                    .send(
-                        Message::new(
-                            self.node_id.clone(),
-                            destination.clone(),
-                            Request::Broadcast { message: *message },
-                        )
-                        .with_id(message_id),
-                    )
-                    .context("re-broadcasting message to neighbour")?;
-                new.insert(message_id, (Instant::now(), destination.clone(), *message));
-                handled.insert(*acknowledge_id);
-            }
-            Ok(())
-        };
-        let result = rebroadcast();
-        // Remove the handled requests from the set regardless of the result. If the the error is
-        // recoverable, the set still makes sense. No messages will be re-broadcast a second
-        // time.
-        handled.into_iter().for_each(|h| {
-            self.awaiting_broadcast_ok.remove(&h);
-        });
-        self.awaiting_broadcast_ok.extend(new);
-        result?;
+        self.rebroadcast_on_timeout(&mut *socket)?;
 
         Ok(match request {
             Request::Init { node_id, .. } => {
@@ -130,8 +172,17 @@ impl Node for BroadcastNode {
                             .with_id(message_id),
                         )
                         .context("broadcasting message to neighbour")?;
-                    self.awaiting_broadcast_ok
-                        .insert(message_id, (Instant::now(), neighbour, message));
+                    self.awaiting_broadcast_ok.insert(
+                        message_id,
+                        BroadcastOkWaiter {
+                            message_id,
+                            last_sent: Instant::now(),
+                            retries: 0,
+                            dest: neighbour,
+                            message,
+                        },
+                    );
+                    self.retry_set.register(message_id, message_id);
                 }
                 Response::BroadcastOk
             }
@@ -158,7 +209,11 @@ impl Node for BroadcastNode {
                 // Should not happen.
                 return Ok(());
             };
-            self.awaiting_broadcast_ok.remove(&in_reply_to);
+            self.retry_set
+                .remove_chain_for_message(in_reply_to)
+                .inspect(|o| {
+                    self.awaiting_broadcast_ok.remove(o);
+                });
         }
         Ok(())
     }
