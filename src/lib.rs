@@ -1,10 +1,13 @@
 use std::io::{Read, Write};
+use std::sync::{Arc, Mutex};
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
+pub use self::id_gen::ID_GENERATOR;
 pub use self::seq_kv::SeqKv;
 
+pub mod id_gen;
 pub mod seq_kv;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -126,13 +129,25 @@ pub trait Node: Sized {
 }
 
 pub struct Socket<I, O> {
-    stdin: I,
-    stdout: O,
+    stdin: Arc<Mutex<I>>,
+    stdout: Arc<Mutex<O>>,
+}
+
+impl<I, O> Clone for Socket<I, O> {
+    fn clone(&self) -> Self {
+        Self {
+            stdin: self.stdin.clone(),
+            stdout: self.stdout.clone(),
+        }
+    }
 }
 
 impl<I, O> Socket<I, O> {
     pub fn new(stdin: I, stdout: O) -> Self {
-        Self { stdin, stdout }
+        Self {
+            stdin: Arc::new(Mutex::new(stdin)),
+            stdout: Arc::new(Mutex::new(stdout)),
+        }
     }
 }
 
@@ -144,7 +159,8 @@ where
     where
         R: DeserializeOwned,
     {
-        serde_json::Deserializer::from_reader(&mut self.stdin)
+        let mut stdin = self.stdin.lock().expect("failed to lock stdin");
+        serde_json::Deserializer::from_reader(&mut *stdin)
             .into_iter::<Message<R>>()
             .next()
             .context("waiting for message from stdin")?
@@ -160,9 +176,10 @@ where
     where
         R: serde::Serialize,
     {
-        serde_json::to_writer(&mut self.stdout, &message).context("writing message to stdout")?;
-        self.stdout.write_all(b"\n").context("writing newline")?;
-        self.stdout.flush().context("flushing stdout")?;
+        let mut stdout = self.stdout.lock().expect("failed to lock stdout");
+        serde_json::to_writer(&mut *stdout, &message).context("writing message to stdout")?;
+        stdout.write_all(b"\n").context("writing newline")?;
+        stdout.flush().context("flushing stdout")?;
         Ok(())
     }
 }
